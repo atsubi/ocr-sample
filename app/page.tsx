@@ -1,103 +1,118 @@
-import Image from "next/image";
+'use client';
+
+import { useState, ChangeEvent } from 'react';
+import Tesseract from 'tesseract.js';
+import { useOpenCv } from './hooks/useOpenCv';
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const { cv, isLoaded, progress: cvProgress } = useOpenCv();
+  const [image, setImage] = useState<string | null>(null);
+  const [text, setText] = useState<string | null>(null);
+  const [ocrProgress, setOcrProgress] = useState(0);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (cv && event.target && typeof event.target.result === 'string') {
+          const img = new Image();
+          img.onload = () => {
+            if (!cv) {
+              console.error("OpenCV.js is not loaded yet.");
+              return;
+            }
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            if (tempCtx) {
+              tempCanvas.width = img.width;
+              tempCanvas.height = img.height;
+              tempCtx.drawImage(img, 0, 0, img.width, img.height);
+              console.log("Image drawn to temporary canvas.");
+
+              try {
+                const src = cv.imread(tempCanvas);
+                const dst = new cv.Mat();
+                cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
+                const displayCanvas = document.createElement('canvas');
+                cv.imshow(displayCanvas, dst);
+                setImage(displayCanvas.toDataURL('image/png'));
+                src.delete();
+                dst.delete();
+              } catch (e) {
+                console.error("Error processing image with OpenCV:", e);
+              }
+            }
+          };
+          img.src = event.target.result;
+        }
+      };
+      reader.readAsDataURL(e.target.files[0]);
+    }
+  };
+
+  const handleRecognize = async () => {
+    if (image) {
+      setText(null);
+      setOcrProgress(0);
+      const { data: { text } } = await Tesseract.recognize(
+        image,
+        'jpn',
+        {
+          logger: m => {
+            if (m.status === 'recognizing text') {
+              setOcrProgress(Math.floor(m.progress * 100));
+            }
+          }
+        }
+      );
+      setText(text);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-4">
+      <div className="max-w-2xl w-full bg-white shadow-lg rounded-lg p-8">
+        <h1 className="text-3xl font-bold text-center text-gray-800 mb-8">Tesseract.js OCR</h1>
+        <div className="mb-4 text-center">
+          {!isLoaded ? (
+            <div>
+              <p className="text-gray-500">OpenCVを読み込み中... ({cvProgress}%)</p>
+              <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
+                <div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${cvProgress}%` }}></div>
+              </div>
+            </div>
+          ) : (
+            <p className="text-green-500 font-semibold">OpenCVの準備完了</p>
+          )}
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+        <div className="mb-6">
+          <label htmlFor="file-upload" className={`cursor-pointer bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg inline-block ${!isLoaded && 'opacity-50 cursor-not-allowed'}`}>
+            画像を選択
+          </label>
+          <input id="file-upload" type="file" className="hidden" onChange={handleFileChange} accept="image/*" disabled={!isLoaded} />
+        </div>
+        {image && (
+          <div className="mb-6 flex justify-center">
+            <img src={image} alt="選択した画像" className="max-w-full h-auto rounded-lg shadow-md" />
+          </div>
+        )}
+        <div className="flex justify-center mb-6">
+          <button onClick={handleRecognize} disabled={!image || !cv} className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-6 rounded-lg disabled:bg-gray-400 disabled:cursor-not-allowed">
+            文字を認識
+          </button>
+        </div>
+        {ocrProgress > 0 && ocrProgress < 100 && (
+          <div className="w-full bg-gray-200 rounded-full h-4 mb-6">
+            <div className="bg-blue-500 h-4 rounded-full" style={{ width: `${ocrProgress}%` }}></div>
+          </div>
+        )}
+        {text && (
+          <div className="bg-gray-50 p-6 rounded-lg shadow-inner">
+            <h2 className="text-xl font-semibold text-gray-700 mb-4">認識結果:</h2>
+            <p className="text-gray-600 whitespace-pre-wrap">{text}</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
