@@ -1,4 +1,3 @@
-
 'use client';
 
 import { useState, ChangeEvent, useRef } from 'react';
@@ -30,7 +29,7 @@ function centerAspectCrop(
 export default function Home() {
   const { cv, isLoaded, progress } = useOpenCv();
   const [originalImageSrc, setOriginalImageSrc] = useState<string | null>(null);
-  const [croppedImageSrc, setCroppedImageSrc] = useState<string | null>(null);
+  const [processedImageSrc, setProcessedImageSrc] = useState<string | null>(null); // Renamed from croppedImageSrc
   const [text, setText] = useState<string | null>(null);
   const [ocrProgress, setOcrProgress] = useState(0);
 
@@ -48,7 +47,7 @@ export default function Home() {
       reader.onload = (event) => {
         if (event.target && typeof event.target.result === 'string') {
           setOriginalImageSrc(event.target.result);
-          setCroppedImageSrc(null); // Reset cropped image
+          setProcessedImageSrc(null); // Reset processed image
           setText(null); // Reset OCR result
           setCrop(undefined); // Reset crop selection
         }
@@ -72,7 +71,67 @@ export default function Home() {
     setCrop(c);
   };
 
-  const handleCropAndProcess = () => {
+  // New function to encapsulate OpenCV processing
+  const processImageWithOpenCv = async (imageDataUrl: string): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const tempCanvas = document.createElement('canvas');
+        const tempCtx = tempCanvas.getContext('2d');
+        if (tempCtx) {
+          tempCanvas.width = img.width;
+          tempCanvas.height = img.height;
+          tempCtx.drawImage(img, 0, 0, img.width, img.height);
+
+          try {
+            const src = cv.imread(tempCanvas);
+            const src2 = cv.imread(tempCanvas);
+            let dst = new cv.Mat();
+
+            cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
+            cv.threshold(dst, dst, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+            cv.bitwise_not(dst, dst);
+
+            // Hough Transform for line detection and removal
+            let lines = new cv.Mat();
+            cv.HoughLinesP(dst, lines, 1, Math.PI / 180, 80, 230, 1); // Parameters from previous step
+
+            // Draw detected lines in red
+            for (let i = 0; i < lines.rows; ++i) {
+              let x1 = lines.data32S[i * 4];
+              let y1 = lines.data32S[i * 4 + 1];
+              let x2 = lines.data32S[i * 4 + 2];
+              let y2 = lines.data32S[i * 4 + 3];
+              console.log("start:", x1, y1, "end:", x2, y2);
+              let startPoint = new cv.Point(x1, y1);
+              let endPoint = new cv.Point(x2, y2);
+              cv.line(src2, startPoint, endPoint, new cv.Scalar(255, 255, 255, 255), 3); // Red, thicker line
+            }
+            lines.delete(); // Release memory
+
+            const displayCanvas = document.createElement('canvas');
+            cv.imshow(displayCanvas, src2);
+            const processedDataUrl = displayCanvas.toDataURL('image/png');
+
+            src.delete();
+            src2.delete();
+            dst.delete();
+            
+            resolve(processedDataUrl);
+          } catch (e) {
+            console.error("Error processing image with OpenCV:", e);
+            reject(e);
+          }
+        } else {
+          reject(new Error('No 2d context'));
+        }
+      };
+      img.onerror = reject;
+      img.src = imageDataUrl;
+    });
+  };
+
+  const handleCropAndProcess = async () => {
     if (completedCrop && imgRef.current && previewCanvasRef.current && cv) {
       const image = imgRef.current;
       const canvas = previewCanvasRef.current;
@@ -101,43 +160,33 @@ export default function Home() {
       );
 
       const croppedDataUrl = canvas.toDataURL('image/png');
-      setCroppedImageSrc(croppedDataUrl);
+      try {
+        const result = await processImageWithOpenCv(croppedDataUrl);
+        setProcessedImageSrc(result);
+      } catch (error) {
+        console.error("Failed to process cropped image:", error);
+      }
+    }
+  };
 
-      // Process with OpenCV (Grayscale)
-      const img = new Image();
-      img.onload = () => {
-        const tempCanvas = document.createElement('canvas');
-        const tempCtx = tempCanvas.getContext('2d');
-        if (tempCtx) {
-          tempCanvas.width = img.width;
-          tempCanvas.height = img.height;
-          tempCtx.drawImage(img, 0, 0, img.width, img.height);
-
-          try {
-            const src = cv.imread(tempCanvas);
-            const dst = new cv.Mat();
-            cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
-            cv.threshold(dst, dst, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-            const displayCanvas = document.createElement('canvas');
-            cv.imshow(displayCanvas, dst);
-            setCroppedImageSrc(displayCanvas.toDataURL('image/png')); // Update with grayscale image
-            src.delete();
-            dst.delete();
-          } catch (e) {
-            console.error("Error processing image with OpenCV:", e);
-          }
-        }
-      };
-      img.src = croppedDataUrl;
+  const handleProcessOriginalImage = async () => {
+    if (originalImageSrc && cv) {
+      try {
+        const result = await processImageWithOpenCv(originalImageSrc);
+        setProcessedImageSrc(result);
+        setOriginalImageSrc(null); // Hide original image and crop UI after processing
+      } catch (error) {
+        console.error("Failed to process original image:", error);
+      }
     }
   };
 
   const handleRecognize = async () => {
-    if (croppedImageSrc) {
+    if (processedImageSrc) {
       setText(null);
       setOcrProgress(0);
       const { data: { text } } = await Tesseract.recognize(
-        croppedImageSrc,
+        processedImageSrc,
         'jpn',
         {
           logger: m => {
@@ -175,9 +224,9 @@ export default function Home() {
           <input id="file-upload" type="file" className="hidden" onChange={handleFileChange} accept="image/*" disabled={!isLoaded} />
         </div>
 
-        {originalImageSrc && !croppedImageSrc && (
+        {originalImageSrc && !processedImageSrc && (
           <div className="mb-6 flex flex-col items-center">
-            <h2 className="text-xl font-semibold text-gray-700 mb-4">画像を切り抜いてください</h2>
+            <h2 className="text-xl font-semibold text-gray-700 mb-4">画像を切り抜いてください (任意)</h2>
             <ReactCrop
               crop={crop}
               onChange={onCropChange}
@@ -192,19 +241,28 @@ export default function Home() {
                 onLoad={onImageLoad}
               />
             </ReactCrop>
-            <button
-              onClick={handleCropAndProcess}
-              className="mt-4 bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 px-6 rounded-lg disabled:bg-gray-400 disabled:cursor-not-allowed"
-              disabled={!completedCrop?.width || !completedCrop?.height || !cv}
-            >
-              切り抜いてグレースケール化
-            </button>
+            <div className="flex space-x-4 mt-4">
+              <button
+                onClick={handleCropAndProcess}
+                className="bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 px-6 rounded-lg disabled:bg-gray-400 disabled:cursor-not-allowed"
+                disabled={!completedCrop?.width || !completedCrop?.height || !cv}
+              >
+                切り抜いて処理
+              </button>
+              <button
+                onClick={handleProcessOriginalImage}
+                className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-6 rounded-lg disabled:bg-gray-400 disabled:cursor-not-allowed"
+                disabled={!originalImageSrc || !cv}
+              >
+                元の画像をそのまま処理
+              </button>
+            </div>
           </div>
         )}
 
-        {croppedImageSrc && (
+        {processedImageSrc && (
           <div className="mb-6 flex justify-center">
-            <img src={croppedImageSrc} alt="切り抜き＆グレースケール画像" className="max-w-full h-auto rounded-lg shadow-md" />
+            <img src={processedImageSrc} alt="処理済み画像" className="max-w-full h-auto rounded-lg shadow-md" />
           </div>
         )}
 
@@ -216,7 +274,7 @@ export default function Home() {
         />
 
         <div className="flex justify-center mb-6">
-          <button onClick={handleRecognize} disabled={!croppedImageSrc || !cv} className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-6 rounded-lg disabled:bg-gray-400 disabled:cursor-not-allowed">
+          <button onClick={handleRecognize} disabled={!processedImageSrc || !cv} className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-6 rounded-lg disabled:bg-gray-400 disabled:cursor-not-allowed">
             文字を認識
           </button>
         </div>
