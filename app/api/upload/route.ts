@@ -1,28 +1,30 @@
 
 import { NextRequest, NextResponse } from 'next/server';
-import { writeFile } from 'fs/promises';
-import { join } from 'path';
+import fs from 'fs';
+import path from 'path';
 
-export async function POST(request: NextRequest) {
-  const data = await request.formData();
-  const file: File | null = data.get('file') as unknown as File;
-
-  if (!file) {
-    return NextResponse.json({ success: false, error: 'No file found' });
-  }
-
-  const bytes = await file.arrayBuffer();
-  const buffer = Buffer.from(bytes);
-
-  const uploadsDir = join(process.cwd(), 'public', 'uploads');
-  const path = join(uploadsDir, file.name);
-
+export async function POST(req: NextRequest) {
   try {
-    await writeFile(path, buffer);
-    console.log(`File saved to ${path}`);
-    return NextResponse.json({ success: true, path: `/uploads/${file.name}` });
+    const { image } = await req.json();
+    if (!image) {
+      return NextResponse.json({ error: 'No image data' }, { status: 400 });
+    }
+
+    const base64Data = image.replace(/^data:image\/png;base64,/, '');
+    const fileName = `processed-${Date.now()}.png`;
+    const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
+    const filePath = path.join(uploadsDir, fileName);
+
+    // ディレクトリが存在しない場合は作成
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+
+    fs.writeFileSync(filePath, base64Data, 'base64');
+
+    return NextResponse.json({ filePath: `/uploads/${fileName}` });
   } catch (error) {
-    console.error('Error saving file:', error);
-    return NextResponse.json({ success: false, error: 'Error saving file' });
+    console.error(error);
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }

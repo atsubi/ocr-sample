@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, ChangeEvent, useRef } from 'react';
+import { useState, ChangeEvent, useRef, useEffect } from 'react';
 import Tesseract from 'tesseract.js';
 import { useOpenCv } from './hooks/useOpenCv';
 import ReactCrop, { Crop, PixelCrop, centerCrop, makeAspectCrop } from 'react-image-crop';
@@ -31,6 +31,7 @@ export default function Home() {
   const [originalImageSrc, setOriginalImageSrc] = useState<string | null>(null);
   const [processedImageSrc, setProcessedImageSrc] = useState<string | null>(null); // Renamed from croppedImageSrc
   const [text, setText] = useState<string | null>(null);
+  const [imageForProcessing, setImageForProcessing] = useState<string | null>(null);
   const [ocrProgress, setOcrProgress] = useState(0);
 
   const imgRef = useRef<HTMLImageElement>(null);
@@ -40,6 +41,7 @@ export default function Home() {
   const [scale, setScale] = useState(1);
   const [rotate, setRotate] = useState(0);
   const [aspect, setAspect] = useState<number | undefined>(undefined);
+  const [threshold, setThreshold] = useState(135);
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -72,7 +74,7 @@ export default function Home() {
   };
 
   // New function to encapsulate OpenCV processing
-  const processImageWithOpenCv = async (imageDataUrl: string): Promise<string> => {
+  const processImageWithOpenCv = async (imageDataUrl: string, thresholdValue: number): Promise<string> => {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
@@ -85,18 +87,21 @@ export default function Home() {
 
           try {
             const src = cv.imread(tempCanvas);
-            const src2 = cv.imread(tempCanvas);
             let dst = new cv.Mat();
+            let dst2 = new cv.Mat();
 
             cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
-            cv.threshold(dst, dst, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+            cv.cvtColor(src, dst2, cv.COLOR_RGBA2GRAY);
+
+            cv.threshold(dst, dst, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+            cv.threshold(dst2, dst2, thresholdValue, 255, cv.THRESH_BINARY);            
             cv.bitwise_not(dst, dst);
 
             // Hough Transform for line detection and removal
             let lines = new cv.Mat();
-            cv.HoughLinesP(dst, lines, 1, Math.PI / 180, 80, 230, 1); // Parameters from previous step
+            cv.HoughLinesP(dst, lines, 1, Math.PI / 180, 150, 27, 1); // Parameters from previous step
 
-            // Draw detected lines in red
+            // Draw detected lines in white
             for (let i = 0; i < lines.rows; ++i) {
               let x1 = lines.data32S[i * 4];
               let y1 = lines.data32S[i * 4 + 1];
@@ -105,17 +110,17 @@ export default function Home() {
               console.log("start:", x1, y1, "end:", x2, y2);
               let startPoint = new cv.Point(x1, y1);
               let endPoint = new cv.Point(x2, y2);
-              cv.line(src2, startPoint, endPoint, new cv.Scalar(255, 255, 255, 255), 3); // Red, thicker line
+              cv.line(dst2, startPoint, endPoint, new cv.Scalar(255, 0, 0, 255), 2); // Red, thicker line
             }
             lines.delete(); // Release memory
 
             const displayCanvas = document.createElement('canvas');
-            cv.imshow(displayCanvas, src2);
+            cv.imshow(displayCanvas, dst2);
             const processedDataUrl = displayCanvas.toDataURL('image/png');
 
             src.delete();
-            src2.delete();
             dst.delete();
+            dst2.delete();
             
             resolve(processedDataUrl);
           } catch (e) {
@@ -144,60 +149,97 @@ export default function Home() {
       const scaleX = image.naturalWidth / image.width;
       const scaleY = image.naturalHeight / image.height;
 
-      canvas.width = completedCrop.width;
-      canvas.height = completedCrop.height;
+      const cropX = completedCrop.x * scaleX;
+      const cropY = completedCrop.y * scaleY;
+      const cropWidth = completedCrop.width * scaleX;
+      const cropHeight = completedCrop.height * scaleY;
+
+      canvas.width = cropWidth;
+      canvas.height = cropHeight;
 
       ctx.drawImage(
         image,
-        completedCrop.x * scaleX,
-        completedCrop.y * scaleY,
-        completedCrop.width * scaleX,
-        completedCrop.height * scaleY,
+        cropX,
+        cropY,
+        cropWidth,
+        cropHeight,
         0,
         0,
-        completedCrop.width,
-        completedCrop.height,
+        cropWidth,
+        cropHeight
       );
 
       const croppedDataUrl = canvas.toDataURL('image/png');
-      try {
-        const result = await processImageWithOpenCv(croppedDataUrl);
-        setProcessedImageSrc(result);
-      } catch (error) {
-        console.error("Failed to process cropped image:", error);
-      }
+      setImageForProcessing(croppedDataUrl);
     }
   };
 
   const handleProcessOriginalImage = async () => {
     if (originalImageSrc && cv) {
-      try {
-        const result = await processImageWithOpenCv(originalImageSrc);
-        setProcessedImageSrc(result);
-        setOriginalImageSrc(null); // Hide original image and crop UI after processing
-      } catch (error) {
-        console.error("Failed to process original image:", error);
-      }
+      setImageForProcessing(originalImageSrc);
+      setOriginalImageSrc(null); // Hide original image and crop UI after processing
     }
   };
+
+  useEffect(() => {
+    if (imageForProcessing && cv) {
+      processImageWithOpenCv(imageForProcessing, threshold).then(setProcessedImageSrc);
+    }
+  }, [threshold, imageForProcessing, cv]);
 
   const handleRecognize = async () => {
     if (processedImageSrc) {
       setText(null);
       setOcrProgress(0);
+
+      const options = {
+        /*tessedit_char_whitelist: '★◎' +
+          'あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん' +
+          'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン' +
+          '一二三四六七八九十百千万億兆円日時分秒年月日' +
+          'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' +
+          '0123456789' +
+          '!"#$%&\'()*+,-./:;<=>?[\]^_`{|}~ ',*/
+        logger: (m: any) => {
+          console.log(m);
+          if (m.status === 'recognizing text') {
+            setOcrProgress(Math.floor(m.progress * 100));
+          }
+        },
+      };
+
+      // @ts-ignore
       const { data: { text } } = await Tesseract.recognize(
         processedImageSrc,
         'jpn',
-        {
-          logger: m => {
-            console.log(m);
-            if (m.status === 'recognizing text') {
-              setOcrProgress(Math.floor(m.progress * 100));
-            }
-          }
-        }
+        options
       );
+
       setText(text.replace(/\s+/g, ''));
+    }
+  };
+
+  const handleSaveImage = async () => {
+    if (processedImageSrc) {
+      try {
+        const response = await fetch('/api/upload', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ image: processedImageSrc }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          alert(`画像が保存されました: ${data.filePath}`);
+        } else {
+          alert('画像の保存に失敗しました。');
+        }
+      } catch (error) {
+        console.error('画像の保存中にエラーが発生しました:', error);
+        alert('画像の保存中にエラーが発生しました。');
+      }
     }
   };
 
@@ -261,9 +303,23 @@ export default function Home() {
         )}
 
         {processedImageSrc && (
-          <div className="mb-6 flex justify-center">
-            <img src={processedImageSrc} alt="処理済み画像" className="max-w-full h-auto rounded-lg shadow-md" />
-          </div>
+          <>
+            <div className="mb-4">
+              <label htmlFor="threshold" className="block mb-2 text-sm font-medium text-gray-900">Threshold: {threshold}</label>
+              <input
+                id="threshold"
+                type="range"
+                min="0"
+                max="255"
+                value={threshold}
+                onChange={(e) => setThreshold(parseInt(e.target.value))}
+                className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+              />
+            </div>
+            <div className="mb-6 flex justify-center">
+              <img src={processedImageSrc} alt="処理済み画像" className="max-w-full h-auto rounded-lg shadow-md" />
+            </div>
+          </>
         )}
 
         <canvas
@@ -276,6 +332,9 @@ export default function Home() {
         <div className="flex justify-center mb-6">
           <button onClick={handleRecognize} disabled={!processedImageSrc || !cv} className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-6 rounded-lg disabled:bg-gray-400 disabled:cursor-not-allowed">
             文字を認識
+          </button>
+          <button onClick={handleSaveImage} disabled={!processedImageSrc} className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-6 rounded-lg disabled:bg-gray-400 disabled:cursor-not-allowed ml-4">
+            画像を保存
           </button>
         </div>
         {ocrProgress > 0 && ocrProgress < 100 && (
